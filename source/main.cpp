@@ -7,6 +7,18 @@
 #include <EGL/eglext.h> // EGL extensions
 #include <glad/glad.h>  // glad library (OpenGL loader)
 
+// GLM headers
+#define GLM_FORCE_PURE
+#include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
+#include <glm/mat4x4.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
+#include "stb_image.h"
+
+constexpr auto TAU = glm::two_pi<float>();
+
 //-----------------------------------------------------------------------------
 // nxlink support
 //-----------------------------------------------------------------------------
@@ -180,30 +192,86 @@ static void setMesaConfig()
 }
 
 static const char* const vertexShaderSource = R"text(
-    #version 330 core
+    #version 320 es
+    precision mediump float;
 
-    layout (location = 0) in vec3 aPos;
-    layout (location = 1) in vec3 aColor;
+    layout (location = 0) in vec3 inPos;
+    layout (location = 1) in vec2 inTexCoord;
+    layout (location = 2) in vec3 inNormal;
 
-    out vec3 ourColor;
+    out vec2 vtxTexCoord;
+    out vec4 vtxNormalQuat;
+    out vec3 vtxView;
+
+    uniform mat4 mdlvMtx;
+    uniform mat4 projMtx;
 
     void main()
     {
-        gl_Position = vec4(aPos.x, aPos.y, aPos.z, 1.0);
-        ourColor = aColor;
+        // Calculate position
+        vec4 pos = mdlvMtx * vec4(inPos, 1.0);
+        vtxView = -pos.xyz;
+        gl_Position = projMtx * pos;
+
+        // Calculate normalquat
+        vec3 normal = normalize(mat3(mdlvMtx) * inNormal);
+        float z = (1.0 + normal.z) / 2.0;
+        vtxNormalQuat = vec4(1.0, 0.0, 0.0, 0.0);
+        if (z > 0.0)
+        {
+            vtxNormalQuat.z = sqrt(z);
+            vtxNormalQuat.xy = normal.xy / (2.0 * vtxNormalQuat.z);
+        }
+
+        // Calculate texcoord
+        vtxTexCoord = inTexCoord;
     }
 )text";
 
 static const char* const fragmentShaderSource = R"text(
-    #version 330 core
+    #version 320 es
+    precision mediump float;
 
-    in vec3 ourColor;
+    in vec2 vtxTexCoord;
+    in vec4 vtxNormalQuat;
+    in vec3 vtxView;
 
     out vec4 fragColor;
 
+    uniform vec4 lightPos;
+    uniform vec3 ambient;
+    uniform vec3 diffuse;
+    uniform vec4 specular; // w component is shininess
+
+    uniform sampler2D tex_diffuse;
+
+    // Rotate the vector v by the quaternion q
+    vec3 quatrotate(vec4 q, vec3 v)
+    {
+        return v + 2.0*cross(q.xyz, cross(q.xyz, v) + q.w*v);
+    }
+
     void main()
     {
-        fragColor = vec4(ourColor, 1.0f);
+        // Extract normal from quaternion
+        vec4 normquat = normalize(vtxNormalQuat);
+        vec3 normal = quatrotate(normquat, vec3(0.0, 0.0, 1.0));
+
+        vec3 lightVec;
+        if (lightPos.w != 0.0)
+            lightVec = normalize(lightPos.xyz + vtxView);
+        else
+            lightVec = normalize(lightPos.xyz);
+
+        vec3 viewVec = normalize(vtxView);
+        vec3 halfVec = normalize(viewVec + lightVec);
+        float diffuseFactor = max(dot(lightVec, normal), 0.0);
+        float specularFactor = pow(max(dot(normal, halfVec), 0.0), specular.w);
+
+        vec4 texDiffuseColor = texture(tex_diffuse, vtxTexCoord);
+        vec3 fragLightColor = ambient + diffuseFactor*diffuse*texDiffuseColor.rgb + specularFactor*specular.xyz;
+
+        fragColor = vec4(min(fragLightColor, 1.0), texDiffuseColor.a);
     }
 )text";
 
@@ -222,7 +290,7 @@ static GLuint createAndCompileShader(GLenum type, const char* source)
     glCompileShader(handle);
     glGetShaderiv(handle, GL_COMPILE_STATUS, &success);
 
-    if (!success)
+    if (success == GL_FALSE)
     {
         glGetShaderInfoLog(handle, sizeof(msg), nullptr, msg);
         TRACE("%u: %s\n", type, msg);
@@ -233,8 +301,102 @@ static GLuint createAndCompileShader(GLenum type, const char* source)
     return handle;
 }
 
+typedef struct
+{
+    float position[3];
+    float texcoord[2];
+    float normal[3];
+} Vertex;
+
+static const Vertex vertex_list[] =
+{
+    // First face (PZ)
+    // First triangle
+    { {-0.5f, -0.5f, +0.5f}, {0.0f, 0.0f}, {0.0f, 0.0f, +1.0f} },
+    { {+0.5f, -0.5f, +0.5f}, {1.0f, 0.0f}, {0.0f, 0.0f, +1.0f} },
+    { {+0.5f, +0.5f, +0.5f}, {1.0f, 1.0f}, {0.0f, 0.0f, +1.0f} },
+    // Second triangle
+    { {+0.5f, +0.5f, +0.5f}, {1.0f, 1.0f}, {0.0f, 0.0f, +1.0f} },
+    { {-0.5f, +0.5f, +0.5f}, {0.0f, 1.0f}, {0.0f, 0.0f, +1.0f} },
+    { {-0.5f, -0.5f, +0.5f}, {0.0f, 0.0f}, {0.0f, 0.0f, +1.0f} },
+
+    // Second face (MZ)
+    // First triangle
+    { {-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f}, {0.0f, 0.0f, -1.0f} },
+    { {-0.5f, +0.5f, -0.5f}, {1.0f, 0.0f}, {0.0f, 0.0f, -1.0f} },
+    { {+0.5f, +0.5f, -0.5f}, {1.0f, 1.0f}, {0.0f, 0.0f, -1.0f} },
+    // Second triangle
+    { {+0.5f, +0.5f, -0.5f}, {1.0f, 1.0f}, {0.0f, 0.0f, -1.0f} },
+    { {+0.5f, -0.5f, -0.5f}, {0.0f, 1.0f}, {0.0f, 0.0f, -1.0f} },
+    { {-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f}, {0.0f, 0.0f, -1.0f} },
+
+    // Third face (PX)
+    // First triangle
+    { {+0.5f, -0.5f, -0.5f}, {0.0f, 0.0f}, {+1.0f, 0.0f, 0.0f} },
+    { {+0.5f, +0.5f, -0.5f}, {1.0f, 0.0f}, {+1.0f, 0.0f, 0.0f} },
+    { {+0.5f, +0.5f, +0.5f}, {1.0f, 1.0f}, {+1.0f, 0.0f, 0.0f} },
+    // Second triangle
+    { {+0.5f, +0.5f, +0.5f}, {1.0f, 1.0f}, {+1.0f, 0.0f, 0.0f} },
+    { {+0.5f, -0.5f, +0.5f}, {0.0f, 1.0f}, {+1.0f, 0.0f, 0.0f} },
+    { {+0.5f, -0.5f, -0.5f}, {0.0f, 0.0f}, {+1.0f, 0.0f, 0.0f} },
+
+    // Fourth face (MX)
+    // First triangle
+    { {-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f} },
+    { {-0.5f, -0.5f, +0.5f}, {1.0f, 0.0f}, {-1.0f, 0.0f, 0.0f} },
+    { {-0.5f, +0.5f, +0.5f}, {1.0f, 1.0f}, {-1.0f, 0.0f, 0.0f} },
+    // Second triangle
+    { {-0.5f, +0.5f, +0.5f}, {1.0f, 1.0f}, {-1.0f, 0.0f, 0.0f} },
+    { {-0.5f, +0.5f, -0.5f}, {0.0f, 1.0f}, {-1.0f, 0.0f, 0.0f} },
+    { {-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f} },
+
+    // Fifth face (PY)
+    // First triangle
+    { {-0.5f, +0.5f, -0.5f}, {0.0f, 0.0f}, {0.0f, +1.0f, 0.0f} },
+    { {-0.5f, +0.5f, +0.5f}, {1.0f, 0.0f}, {0.0f, +1.0f, 0.0f} },
+    { {+0.5f, +0.5f, +0.5f}, {1.0f, 1.0f}, {0.0f, +1.0f, 0.0f} },
+    // Second triangle
+    { {+0.5f, +0.5f, +0.5f}, {1.0f, 1.0f}, {0.0f, +1.0f, 0.0f} },
+    { {+0.5f, +0.5f, -0.5f}, {0.0f, 1.0f}, {0.0f, +1.0f, 0.0f} },
+    { {-0.5f, +0.5f, -0.5f}, {0.0f, 0.0f}, {0.0f, +1.0f, 0.0f} },
+
+    // Sixth face (MY)
+    // First triangle
+    { {-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f}, {0.0f, -1.0f, 0.0f} },
+    { {+0.5f, -0.5f, -0.5f}, {1.0f, 0.0f}, {0.0f, -1.0f, 0.0f} },
+    { {+0.5f, -0.5f, +0.5f}, {1.0f, 1.0f}, {0.0f, -1.0f, 0.0f} },
+    // Second triangle
+    { {+0.5f, -0.5f, +0.5f}, {1.0f, 1.0f}, {0.0f, -1.0f, 0.0f} },
+    { {-0.5f, -0.5f, +0.5f}, {0.0f, 1.0f}, {0.0f, -1.0f, 0.0f} },
+    { {-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f}, {0.0f, -1.0f, 0.0f} },
+};
+
+#define vertex_list_count (sizeof(vertex_list)/sizeof(vertex_list[0]))
+
 static GLuint s_program;
 static GLuint s_vao, s_vbo;
+static GLuint s_tex;
+
+static GLint loc_mdlvMtx, loc_projMtx;
+static GLint loc_lightPos, loc_ambient, loc_diffuse, loc_specular, loc_tex_diffuse;
+
+static u64 s_startTicks;
+
+void readPNG(const char* path, char** data, int* size)
+{
+	FILE *fp = fopen(path, "rb");
+	//delete path;
+
+	fseek(fp, 0L, SEEK_END);
+	*size = ftell(fp);
+	rewind(fp);
+
+	*data = (char*)calloc(1, *size + 1);
+	fread(*data, *size, 1, fp);
+
+	fclose(fp);
+}
+
 
 static void sceneInit()
 {
@@ -248,7 +410,7 @@ static void sceneInit()
 
     GLint success;
     glGetProgramiv(s_program, GL_LINK_STATUS, &success);
-    if (!success)
+    if (success == GL_FALSE)
     {
         char buf[512];
         glGetProgramInfoLog(s_program, sizeof(buf), nullptr, buf);
@@ -257,18 +419,16 @@ static void sceneInit()
     glDeleteShader(vsh);
     glDeleteShader(fsh);
 
-    struct Vertex
-    {
-        float position[3];
-        float color[3];
-    };
+    loc_mdlvMtx = glGetUniformLocation(s_program, "mdlvMtx");
+    loc_projMtx = glGetUniformLocation(s_program, "projMtx");
+    loc_lightPos = glGetUniformLocation(s_program, "lightPos");
+    loc_ambient = glGetUniformLocation(s_program, "ambient");
+    loc_diffuse = glGetUniformLocation(s_program, "diffuse");
+    loc_specular = glGetUniformLocation(s_program, "specular");
+    loc_tex_diffuse = glGetUniformLocation(s_program, "tex_diffuse");
 
-    static const Vertex vertices[] =
-    {
-        { { -0.5f, -0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f } },
-        { {  0.5f, -0.5f, 0.0f }, { 0.0f, 1.0f, 0.0f } },
-        { {  0.0f,  0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f } },
-    };
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
 
     glGenVertexArrays(1, &s_vao);
     glGenBuffers(1, &s_vbo);
@@ -276,13 +436,16 @@ static void sceneInit()
     glBindVertexArray(s_vao);
 
     glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_list), vertex_list, GL_STATIC_DRAW);
 
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, position));
     glEnableVertexAttribArray(0);
 
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, color));
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, texcoord));
     glEnableVertexAttribArray(1);
+
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, normal));
+    glEnableVertexAttribArray(2);
 
     // note that this is allowed, the call to glVertexAttribPointer registered VBO as the vertex attribute's bound vertex buffer object so afterwards we can safely unbind
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -290,21 +453,70 @@ static void sceneInit()
     // You can unbind the VAO afterwards so other VAO calls won't accidentally modify this VAO, but this rarely happens. Modifying other
     // VAOs requires a call to glBindVertexArray anyways so we generally don't unbind VAOs (nor VBOs) when it's not directly necessary.
     glBindVertexArray(0);
+
+    // Textures
+    glGenTextures(1, &s_tex);
+    glActiveTexture(GL_TEXTURE0); // activate the texture unit first before binding texture
+    glBindTexture(GL_TEXTURE_2D, s_tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+	char* pngData;
+	int png_size;
+
+    int width, height, nchan;
+    stbi_set_flip_vertically_on_load(true);
+    
+	romfsInit();
+	readPNG((const char*)"romfs:/logo.png", &pngData, &png_size);
+	stbi_uc* img = stbi_load_from_memory((const stbi_uc*)pngData, png_size, &width, &height, &nchan, 4);
+
+	
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, img);
+    stbi_image_free(img);
+
+    // Uniforms
+    glUseProgram(s_program);
+    auto projMtx = glm::perspective(40.0f*TAU/360.0f, 1280.0f/720.0f, 0.01f, 1000.0f);
+    glUniformMatrix4fv(loc_projMtx, 1, GL_FALSE, glm::value_ptr(projMtx));
+    glUniform4f(loc_lightPos, 0.0f, 0.0f, 0.5f, 1.0f);
+    glUniform3f(loc_ambient, 0.1f, 0.1f, 0.1f);
+    glUniform3f(loc_diffuse, 0.4f, 0.4f, 0.4f);
+    glUniform4f(loc_specular, 0.5f, 0.5f, 0.5f, 20.0f);
+    glUniform1i(loc_tex_diffuse, 0); // texunit 0
+    s_startTicks = armGetSystemTick();
+}
+
+static float getTime()
+{
+    u64 elapsed = armGetSystemTick() - s_startTicks;
+    return (elapsed * 625 / 12) / 1000000000.0;
+}
+
+static void sceneUpdate()
+{
+    glm::mat4 mdlvMtx{1.0};
+    mdlvMtx = glm::translate(mdlvMtx, glm::vec3{0.0f, 0.0f, -3.0f});
+    mdlvMtx = glm::rotate(mdlvMtx, getTime() * TAU * 0.234375f, glm::vec3{1.0f, 0.0f, 0.0f});
+    mdlvMtx = glm::rotate(mdlvMtx, getTime() * TAU * 0.234375f / 2.0f, glm::vec3{0.0f, 1.0f, 0.0f});
+    glUniformMatrix4fv(loc_mdlvMtx, 1, GL_FALSE, glm::value_ptr(mdlvMtx));
 }
 
 static void sceneRender()
 {
-    glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    glClearColor(0x68/255.0f, 0xB0/255.0f, 0xD8/255.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // draw our first triangle
-    glUseProgram(s_program);
+    // draw our textured cube
     glBindVertexArray(s_vao); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
-    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glDrawArrays(GL_TRIANGLES, 0, vertex_list_count);
 }
 
 static void sceneExit()
 {
+    glDeleteTextures(1, &s_tex);
     glDeleteBuffers(1, &s_vbo);
     glDeleteVertexArrays(1, &s_vao);
     glDeleteProgram(s_program);
@@ -333,6 +545,9 @@ int main(int argc, char* argv[])
         u32 kDown = hidKeysDown(CONTROLLER_P1_AUTO);
         if (kDown & KEY_PLUS)
             break;
+
+        // Update our scene
+        sceneUpdate();
 
         // Render stuff!
         sceneRender();
