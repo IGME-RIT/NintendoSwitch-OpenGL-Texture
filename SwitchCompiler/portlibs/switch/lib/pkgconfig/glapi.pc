@@ -1,0 +1,10 @@
+prefix=/opt/devkitpro/portlibs/switch
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: glapi
+Description: Mesa OpenGL shared library
+Version: 19.0.0
+Libs: -L${libdir} -lglapi
+Libs.private: -lm
+Cflags: -I${includedir}

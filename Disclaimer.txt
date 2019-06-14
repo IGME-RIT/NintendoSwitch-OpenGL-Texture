@@ -1,0 +1,20 @@
+Everything in this tutorial is 3rd-party, and open-source
+No materials in this folder are owned by Nintendo, or protected
+by any Nondisclosure Agreement
+
+Emulator:
+https://yuzu-emu.org/downloads/
+https://github.com/yuzu-emu/yuzu
+
+Source code:
+https://github.com/switchbrew/switch-examples
+
+Development environment:
+https://github.com/devkitPro
+
+The developers of the Switch compiler also have more consoles:
+GameCube, Wii, 3DS, and many more
+
+Email me with any questions:
+nprocopi2017@gmail.com
+  --If you want to email me, please put "Nintendo Switch" in the subject

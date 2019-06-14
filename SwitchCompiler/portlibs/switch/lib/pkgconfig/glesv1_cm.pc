@@ -1,0 +1,10 @@
+prefix=/opt/devkitpro/portlibs/switch
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: glesv1_cm
+Description: Mesa OpenGL ES 1.1 CM library
+Version: 19.0.0
+Requires: glapi
+Libs: -lm -L${libdir} -lGLESv1_CM
+Cflags: -I${includedir}

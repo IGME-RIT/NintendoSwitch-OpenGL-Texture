@@ -1,0 +1,11 @@
+prefix=/opt/devkitpro/portlibs/switch
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: egl
+Description: Mesa EGL Library
+Version: 19.0.0
+Requires: glapi
+Libs: -L${libdir} -lEGL
+Libs.private: -lm
+Cflags: -I${includedir} -DMESA_EGL_NO_X11_HEADERS
