@@ -158,6 +158,7 @@ endif
 all: $(BUILD)
 
 $(BUILD):
+	@if not exist $(BUILD) ( md $(BUILD) )
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 	@del *.elf *.nacp
 
